@@ -1,0 +1,43 @@
+# TypeScript source (dist/ is published instead)
+lib/
+tests/
+
+# Virtual environments
+.venv/
+
+# Project management
+.aiwg/
+.claude/
+.github/
+
+# Coverage / test artifacts
+htmlcov/
+.pytest_cache/
+.coverage
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+
+# Config not needed in npm
+tsconfig.json
+.pre-commit-config.yaml
+.env
+.env.example
+.gitattributes
+CLAUDE.md
+CHANGELOG.md
+
+# Build artifacts
+*.egg-info
+build/
+
+# Models (too large for npm — downloaded at install)
+models/
+
+# Test files
+.testfiles/
+
+# Node
+node_modules/
