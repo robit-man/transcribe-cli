@@ -2,15 +2,14 @@
 
 Implements ADR-005: Configuration Management Strategy
 - Hierarchical config: CLI args -> env vars -> config file -> defaults
-- API key via environment variable only (security)
-- pydantic SecretStr for sensitive data
+- pydantic BaseSettings with TRANSCRIBE_ env prefix
 """
 
 import tomllib
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Supported output formats
@@ -62,7 +61,7 @@ class Settings(BaseSettings):
 
     Priority (highest to lowest):
     1. CLI arguments (handled by Typer)
-    2. Environment variables
+    2. Environment variables (TRANSCRIBE_ prefix)
     3. Config file (transcribe.toml or .transcriberc)
     4. Default values
     """
@@ -74,11 +73,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # API Configuration (required, no default)
-    # Uses OPENAI_API_KEY (no prefix) for compatibility with OpenAI conventions
-    openai_api_key: SecretStr = Field(
-        default=None,  # type: ignore[assignment]
-        validation_alias="OPENAI_API_KEY",
+    # Model settings
+    model_size: str = Field(
+        default="base",
+        description="Whisper model size: tiny, base, small, medium, large-v3",
+    )
+    device: str = Field(
+        default="auto",
+        description="Compute device: auto, cpu, cuda",
+    )
+    compute_type: str = Field(
+        default="auto",
+        description="Precision mode: auto, float16, float32, int8",
     )
 
     # Output settings
@@ -104,7 +110,7 @@ class Settings(BaseSettings):
         if v < 1:
             raise ValueError("Concurrency must be at least 1")
         if v > 20:
-            raise ValueError("Concurrency cannot exceed 20 (API rate limits)")
+            raise ValueError("Concurrency cannot exceed 20")
         return v
 
     @field_validator("output_dir")
@@ -114,6 +120,37 @@ class Settings(BaseSettings):
         v = Path(v).resolve()
         if v.exists() and not v.is_dir():
             raise ValueError(f"Output path exists but is not a directory: {v}")
+        return v
+
+    @field_validator("model_size")
+    @classmethod
+    def validate_model_size(cls, v: str) -> str:
+        """Ensure model size is a known variant."""
+        valid = {"tiny", "base", "small", "medium", "large-v3", "large-v2", "large-v1", "large"}
+        if v not in valid:
+            raise ValueError(
+                f"Unknown model size '{v}'. Valid options: {', '.join(sorted(valid))}"
+            )
+        return v
+
+    @field_validator("device")
+    @classmethod
+    def validate_device(cls, v: str) -> str:
+        """Ensure device is a supported value."""
+        valid = {"auto", "cpu", "cuda"}
+        if v not in valid:
+            raise ValueError(f"Unknown device '{v}'. Valid options: auto, cpu, cuda")
+        return v
+
+    @field_validator("compute_type")
+    @classmethod
+    def validate_compute_type(cls, v: str) -> str:
+        """Ensure compute_type is a supported value."""
+        valid = {"auto", "float16", "float32", "int8", "int8_float16", "int8_float32"}
+        if v not in valid:
+            raise ValueError(
+                f"Unknown compute_type '{v}'. Valid options: {', '.join(sorted(valid))}"
+            )
         return v
 
 
@@ -127,12 +164,9 @@ def get_settings(config_path: Optional[Path] = None) -> Settings:
         Settings: Validated application settings.
 
     Raises:
-        ValidationError: If required settings are missing or invalid.
+        ValidationError: If settings are invalid.
     """
-    # Load config file values first
     file_config = load_config_file(config_path)
-
-    # Create settings - env vars will override file config
     return Settings(**file_config)  # type: ignore[arg-type]
 
 
@@ -159,6 +193,17 @@ def create_default_config(path: Optional[Path] = None) -> Path:
     content = '''# Transcribe CLI Configuration
 # See: transcribe config --show
 
+[model]
+# Whisper model size: tiny, base, small, medium, large-v3
+# Larger models are more accurate but slower and use more memory.
+size = "base"
+
+# Compute device: auto, cpu, cuda
+device = "auto"
+
+# Precision mode: auto, float16, float32, int8
+compute_type = "auto"
+
 [output]
 # Output format: "txt", "srt", "vtt", or "json"
 format = "txt"
@@ -167,7 +212,7 @@ format = "txt"
 # dir = "./transcripts"
 
 [processing]
-# Maximum concurrent API calls (1-20)
+# Maximum concurrent transcriptions (1-20)
 concurrency = 5
 
 # Language code or "auto" for detection

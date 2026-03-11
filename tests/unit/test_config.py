@@ -19,21 +19,9 @@ from transcribe_cli.config.settings import (
 class TestSettings:
     """Tests for Settings configuration class."""
 
-    def test_settings_loads_from_env(self) -> None:
-        """Settings should load API key from environment variable."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}, clear=True):
-            settings = Settings(_env_file=None)
-            assert settings.openai_api_key.get_secret_value() == "sk-test-key"
-
-    def test_settings_requires_api_key(self) -> None:
-        """Settings should raise error when API key is missing."""
-        with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(ValidationError):
-                Settings(_env_file=None)
-
     def test_settings_default_values(self) -> None:
         """Settings should have correct default values."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.output_format == "txt"
             assert settings.concurrency == 5
@@ -41,49 +29,81 @@ class TestSettings:
             assert settings.verbose is False
             assert settings.quiet is False
 
+    def test_settings_model_defaults(self) -> None:
+        """Model settings should default to base/auto/auto."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings(_env_file=None)
+            assert settings.model_size == "base"
+            assert settings.device == "auto"
+            assert settings.compute_type == "auto"
+
+    def test_settings_model_size_from_env(self) -> None:
+        """model_size can be set via TRANSCRIBE_MODEL_SIZE env var."""
+        with patch.dict(os.environ, {"TRANSCRIBE_MODEL_SIZE": "medium"}, clear=True):
+            settings = Settings(_env_file=None)
+            assert settings.model_size == "medium"
+
+    def test_settings_device_from_env(self) -> None:
+        """device can be set via TRANSCRIBE_DEVICE env var."""
+        with patch.dict(os.environ, {"TRANSCRIBE_DEVICE": "cpu"}, clear=True):
+            settings = Settings(_env_file=None)
+            assert settings.device == "cpu"
+
+    def test_settings_compute_type_from_env(self) -> None:
+        """compute_type can be set via TRANSCRIBE_COMPUTE_TYPE env var."""
+        with patch.dict(os.environ, {"TRANSCRIBE_COMPUTE_TYPE": "int8"}, clear=True):
+            settings = Settings(_env_file=None)
+            assert settings.compute_type == "int8"
+
+    def test_settings_invalid_model_size(self) -> None:
+        """Invalid model_size raises ValidationError."""
+        with patch.dict(os.environ, {"TRANSCRIBE_MODEL_SIZE": "giant"}, clear=True):
+            with pytest.raises(ValidationError):
+                Settings(_env_file=None)
+
+    def test_settings_invalid_device(self) -> None:
+        """Invalid device raises ValidationError."""
+        with patch.dict(os.environ, {"TRANSCRIBE_DEVICE": "tpu"}, clear=True):
+            with pytest.raises(ValidationError):
+                Settings(_env_file=None)
+
+    def test_settings_invalid_compute_type(self) -> None:
+        """Invalid compute_type raises ValidationError."""
+        with patch.dict(os.environ, {"TRANSCRIBE_COMPUTE_TYPE": "bfloat16"}, clear=True):
+            with pytest.raises(ValidationError):
+                Settings(_env_file=None)
+
     def test_settings_concurrency_validation_min(self) -> None:
         """Concurrency should not be less than 1."""
-        with patch.dict(
-            os.environ,
-            {"OPENAI_API_KEY": "sk-test", "TRANSCRIBE_CONCURRENCY": "0"},
-            clear=True,
-        ):
+        with patch.dict(os.environ, {"TRANSCRIBE_CONCURRENCY": "0"}, clear=True):
             with pytest.raises(ValidationError) as exc_info:
                 Settings(_env_file=None)
             assert "at least 1" in str(exc_info.value)
 
     def test_settings_concurrency_validation_max(self) -> None:
         """Concurrency should not exceed 20."""
-        with patch.dict(
-            os.environ,
-            {"OPENAI_API_KEY": "sk-test", "TRANSCRIBE_CONCURRENCY": "25"},
-            clear=True,
-        ):
+        with patch.dict(os.environ, {"TRANSCRIBE_CONCURRENCY": "25"}, clear=True):
             with pytest.raises(ValidationError) as exc_info:
                 Settings(_env_file=None)
             assert "cannot exceed 20" in str(exc_info.value)
 
     def test_settings_output_dir_resolved(self) -> None:
         """Output directory should be resolved to absolute path."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None, output_dir=Path("."))
             assert settings.output_dir.is_absolute()
 
-    def test_settings_api_key_not_in_repr(self) -> None:
-        """API key should not appear in string representation (security)."""
-        with patch.dict(
-            os.environ, {"OPENAI_API_KEY": "sk-secret-key-12345"}, clear=True
-        ):
-            settings = Settings(_env_file=None)
-            repr_str = repr(settings)
-            assert "sk-secret-key-12345" not in repr_str
-            assert "SecretStr" in repr_str or "**" in repr_str
-
     def test_settings_recursive_default(self) -> None:
         """Recursive should default to False."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.recursive is False
+
+    def test_settings_no_api_key_field(self) -> None:
+        """Settings must NOT have an openai_api_key field."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings(_env_file=None)
+            assert not hasattr(settings, "openai_api_key")
 
 
 class TestFindConfigFile:
@@ -170,6 +190,16 @@ class TestCreateDefaultConfig:
         assert "[processing]" in content
         assert "concurrency = 5" in content
 
+    def test_creates_model_section(self, tmp_path: Path) -> None:
+        """Default config includes [model] section with size/device/compute_type."""
+        config_path = tmp_path / "test.toml"
+        create_default_config(config_path)
+        content = config_path.read_text()
+        assert "[model]" in content
+        assert "size" in content
+        assert "device" in content
+        assert "compute_type" in content
+
     def test_creates_nested_directories(self, tmp_path: Path) -> None:
         """Creates parent directories if needed."""
         config_path = tmp_path / "nested" / "deep" / "config.toml"
@@ -197,7 +227,7 @@ class TestGetConfigLocations:
 
 
 # ──────────────────────────────────────────────────────────
-# WO-7: Diarization and Word Timestamp Config
+# Diarization and Word Timestamp Config
 # ──────────────────────────────────────────────────────────
 
 
@@ -206,45 +236,37 @@ class TestDiarizationConfig:
 
     def test_settings_diarize_default_false(self) -> None:
         """diarize defaults to False."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.diarize is False
 
     def test_settings_diarize_from_env(self) -> None:
         """diarize can be set from env var."""
-        with patch.dict(
-            os.environ,
-            {"OPENAI_API_KEY": "sk-test", "TRANSCRIBE_DIARIZE": "true"},
-            clear=True,
-        ):
+        with patch.dict(os.environ, {"TRANSCRIBE_DIARIZE": "true"}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.diarize is True
 
     def test_settings_word_timestamps_default_false(self) -> None:
         """word_timestamps defaults to False."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.word_timestamps is False
 
     def test_settings_word_timestamps_from_env(self) -> None:
         """word_timestamps can be set from env var."""
-        with patch.dict(
-            os.environ,
-            {"OPENAI_API_KEY": "sk-test", "TRANSCRIBE_WORD_TIMESTAMPS": "true"},
-            clear=True,
-        ):
+        with patch.dict(os.environ, {"TRANSCRIBE_WORD_TIMESTAMPS": "true"}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.word_timestamps is True
 
     def test_settings_format_accepts_vtt(self) -> None:
         """output_format accepts 'vtt'."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None, output_format="vtt")
             assert settings.output_format == "vtt"
 
     def test_settings_format_accepts_json(self) -> None:
         """output_format accepts 'json'."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=True):
+        with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None, output_format="json")
             assert settings.output_format == "json"
 

@@ -39,8 +39,6 @@ from .ffmpeg import (
     validate_ffmpeg,
 )
 from .transcriber import (
-    APIKeyMissingError,
-    FileTooLargeError,
     TranscriptionError,
     TranscriptionResult,
     TranscriptionSegment,
@@ -68,8 +66,6 @@ __all__ = [
     "is_video_file",
     "is_supported_file",
     # Transcriber
-    "APIKeyMissingError",
-    "FileTooLargeError",
     "TranscriptionError",
     "TranscriptionResult",
     "TranscriptionSegment",

@@ -1,162 +1,216 @@
 # transcribe-cli
 
-CLI tool for transcribing audio and video files using OpenAI Whisper API.
+**Local audio/video transcription with speaker diarization. No API keys. No cloud. One command.**
+
+## Quickstart
+
+```bash
+curl -sSL https://raw.githubusercontent.com/robit-man/transcribe-cli/main/install.sh | bash
+```
+
+Then:
+
+```bash
+transcribe audio.mp3
+transcribe meeting.wav --model medium --diarize --format json
+transcribe batch ./recordings --recursive --format srt
+```
+
+---
 
 ## Features
 
-- **Audio Transcription**: Transcribe MP3, WAV, FLAC, AAC, M4A files
-- **Video Support**: Extract and transcribe audio from MKV, MP4, AVI, MOV
-- **Batch Processing**: Process entire directories with concurrent API calls
-- **Multiple Output Formats**: Plain text (TXT) and subtitles (SRT)
-- **Large File Support**: Automatic chunking for files >25MB
-- **Resume Support**: Continue interrupted transcriptions
+- **100% Local** — Runs on your machine via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2). No API keys, no cloud, no data leaves your system.
+- **Speaker Diarization** — Identify who said what with `--diarize` (via [pyannote.audio](https://github.com/pyannote/pyannote-audio))
+- **Word-Level Timestamps** — Precise per-word timing with `--word-timestamps`
+- **4 Output Formats** — `txt`, `srt` (with speaker labels), `vtt` (with W3C voice tags), `json` (full metadata)
+- **Audio + Video** — MP3, WAV, FLAC, AAC, M4A, OGG, WMA, MP4, MKV, AVI, MOV, WebM, FLV
+- **Batch Processing** — Process entire directories with configurable concurrency
+- **5 Model Sizes** — `tiny`, `base`, `small`, `medium`, `large-v3` (auto-downloads on first use)
+- **Auto Audio Extraction** — Videos are automatically handled via FFmpeg
+- **Cross-Platform** — Linux and macOS
 
 ## Requirements
 
 - Python 3.9+
 - FFmpeg 4.0+
-- OpenAI API key
+- ~1 GB disk (for base model; large-v3 needs ~3 GB)
+
+The install script handles all dependencies automatically.
 
 ## Installation
 
-### 1. Install FFmpeg
+### One-Line Install (Recommended)
 
-**Linux (Ubuntu/Debian)**:
 ```bash
-sudo apt update && sudo apt install ffmpeg -y
+curl -sSL https://raw.githubusercontent.com/robit-man/transcribe-cli/main/install.sh | bash
 ```
 
-**macOS (Homebrew)**:
-```bash
-brew install ffmpeg
-```
+This will:
+1. Install system dependencies (Python, FFmpeg, git) if missing
+2. Clone the repository to `~/.local/share/transcribe-cli`
+3. Create a Python virtual environment with all packages
+4. Pre-download the default Whisper model (`base`)
+5. Create `transcribe` and `transcribe-cli` commands in `~/.local/bin`
+6. Add `~/.local/bin` to your PATH if needed
 
-**Windows (Chocolatey)**:
-```bash
-choco install ffmpeg -y
-```
+**Environment variables** (optional):
+- `TRANSCRIBE_INSTALL_DIR` — Custom install location (default: `~/.local/share/transcribe-cli`)
+- `TRANSCRIBE_MODEL` — Model to pre-download (default: `base`)
 
-### 2. Install transcribe-cli
+### Manual Install
 
 ```bash
-pip install transcribe-cli
-```
-
-Or install from source:
-```bash
-git clone https://github.com/jmagly/transcribe-cli.git
+git clone https://github.com/robit-man/transcribe-cli.git
 cd transcribe-cli
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
-### 3. Configure API Key
+### With Speaker Diarization
 
 ```bash
-export OPENAI_API_KEY=sk-your-api-key-here
-```
-
-Or create a `.env` file:
-```bash
-cp .env.example .env
-# Edit .env and add your API key
-```
-
-## Quick Start
-
-```bash
-# Transcribe a single file
-transcribe audio.mp3
-
-# Transcribe video (extracts audio automatically)
-transcribe video.mkv
-
-# Output as SRT subtitles
-transcribe audio.mp3 --format srt
-
-# Batch process a directory
-transcribe batch ./recordings
-
-# Extract audio only (no transcription)
-transcribe extract video.mkv
+pip install -e ".[diarization]"
 ```
 
 ## Usage
 
-### Transcribe Command
+### Transcribe a Single File
 
 ```bash
-transcribe <file> [OPTIONS]
-
-Options:
-  -o, --output-dir PATH   Output directory (default: current)
-  -f, --format TEXT       Output format: txt, srt (default: txt)
-  -l, --language TEXT     Language code or 'auto' (default: auto)
-  --verbose               Enable verbose output
-  --help                  Show help message
+transcribe audio.mp3
+transcribe video.mkv --format srt
+transcribe recording.wav --output-dir ./transcripts
+transcribe lecture.mp3 --model medium --language en
 ```
 
-### Batch Command
+### Speaker Diarization
 
 ```bash
-transcribe batch <directory> [OPTIONS]
-
-Options:
-  -o, --output-dir PATH   Output directory
-  -f, --format TEXT       Output format: txt, srt
-  -c, --concurrency INT   Max concurrent jobs (1-20, default: 5)
-  -r, --recursive         Scan subdirectories
-  --dry-run               Preview files without processing
-  --verbose               Enable verbose output
-  --help                  Show help message
+transcribe meeting.wav --diarize --format srt
+transcribe interview.mp3 --diarize --format json
+transcribe podcast.mp3 --diarize --word-timestamps --format vtt
 ```
 
-**Examples:**
-```bash
-# Preview what would be processed
-transcribe batch ./recordings --dry-run
-
-# Process subdirectories
-transcribe batch ./media --recursive
-
-# Combine options
-transcribe batch ./videos --recursive --format srt --concurrency 3
-```
-
-### Extract Command
+### Batch Processing
 
 ```bash
-transcribe extract <file> [OPTIONS]
-
-Options:
-  -o, --output PATH       Output audio file path
-  -f, --format TEXT       Output format: mp3, wav (default: mp3)
-  --verbose               Enable verbose output
-  --help                  Show help message
+transcribe batch ./recordings
+transcribe batch ./videos --format srt --concurrency 3
+transcribe batch ./media --recursive --dry-run
+transcribe batch ./meetings --model medium --diarize --format json
 ```
 
-### Config Command
+### Audio Extraction
 
 ```bash
-transcribe config [OPTIONS]
-
-Options:
-  --show        Show current configuration
-  --init        Create default config file
-  --locations   Show config file search paths
-  --help        Show help message
+transcribe extract video.mkv
+transcribe extract video.mp4 --output audio.mp3
+transcribe extract video.avi --format wav
 ```
 
-## Configuration
-
-### Config File
-
-Create a `transcribe.toml` file in your project directory:
+### Configuration
 
 ```bash
-transcribe config --init
+transcribe config --show        # Show current settings
+transcribe config --init        # Create transcribe.toml in current directory
+transcribe config --locations   # Show config file search paths
 ```
 
-Example configuration:
+### Dependency Check
+
+```bash
+transcribe setup --check
+```
+
+## CLI Reference
+
+### `transcribe <file> [OPTIONS]`
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--output-dir` | `-o` | Output directory | Current dir |
+| `--format` | `-f` | Output format: `txt`, `srt`, `vtt`, `json` | `txt` |
+| `--language` | `-l` | Language code or `auto` | `auto` |
+| `--model` | `-m` | Model: `tiny`, `base`, `small`, `medium`, `large-v3` | `base` |
+| `--diarize` | | Enable speaker diarization | Off |
+| `--word-timestamps` | | Enable word-level timestamps | Off |
+| `--verbose` | | Verbose output | Off |
+
+### `transcribe batch <directory> [OPTIONS]`
+
+All options from `transcribe` plus:
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--concurrency` | `-c` | Max concurrent jobs (1-20) | `5` |
+| `--recursive` | `-r` | Scan subdirectories | Off |
+| `--dry-run` | | Preview files without processing | Off |
+
+### `transcribe extract <file> [OPTIONS]`
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--output` | `-o` | Output file path | Auto-generated |
+| `--format` | `-f` | Audio format: `mp3`, `wav` | `mp3` |
+
+## Output Formats
+
+### TXT — Plain text
+```
+Hello, welcome to the meeting. Today we'll discuss the quarterly results.
+```
+
+### SRT — SubRip subtitles (with speaker labels when diarized)
+```
+1
+00:00:00,000 --> 00:00:03,500
+[SPEAKER_00] Hello, welcome to the meeting.
+
+2
+00:00:03,500 --> 00:00:07,200
+[SPEAKER_01] Thanks for having me.
+```
+
+### VTT — WebVTT (with W3C voice tags when diarized)
+```
+WEBVTT
+
+00:00:00.000 --> 00:00:03.500
+<v SPEAKER_00>Hello, welcome to the meeting.</v>
+
+00:00:03.500 --> 00:00:07.200
+<v SPEAKER_01>Thanks for having me.</v>
+```
+
+### JSON — Full metadata
+```json
+{
+  "text": "Hello, welcome to the meeting...",
+  "language": "en",
+  "duration": 120.5,
+  "speakers": ["SPEAKER_00", "SPEAKER_01"],
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 3.5,
+      "text": "Hello, welcome to the meeting.",
+      "speaker": "SPEAKER_00",
+      "words": [
+        {"word": "Hello,", "start": 0.1, "end": 0.5},
+        {"word": "welcome", "start": 0.6, "end": 1.0}
+      ]
+    }
+  ]
+}
+```
+
+## Configuration File
+
+Create with `transcribe config --init`:
+
 ```toml
 [output]
 format = "txt"
@@ -166,11 +220,17 @@ concurrency = 5
 language = "auto"
 recursive = false
 
-[logging]
-verbose = false
+[model]
+size = "base"
+device = "auto"
+compute_type = "auto"
+
+[features]
+diarize = false
+word_timestamps = false
 ```
 
-Config files are searched in this order:
+Config files are searched in order:
 1. `./transcribe.toml`
 2. `./.transcriberc`
 3. `~/.config/transcribe/config.toml`
@@ -178,78 +238,59 @@ Config files are searched in this order:
 
 ### Environment Variables
 
-Settings can also be configured via environment variables:
-
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key (required) | - |
-| `TRANSCRIBE_OUTPUT_DIR` | Default output directory | `.` |
-| `TRANSCRIBE_FORMAT` | Default output format | `txt` |
-| `TRANSCRIBE_CONCURRENCY` | Max concurrent jobs | `5` |
+| `TRANSCRIBE_MODEL_SIZE` | Whisper model size | `base` |
+| `TRANSCRIBE_DEVICE` | Compute device (`auto`/`cpu`/`cuda`) | `auto` |
+| `TRANSCRIBE_COMPUTE_TYPE` | Compute type (`auto`/`int8`/`float16`/`float32`) | `auto` |
+| `TRANSCRIBE_CONCURRENCY` | Max concurrent batch jobs | `5` |
 | `TRANSCRIBE_LANGUAGE` | Default language | `auto` |
+| `TRANSCRIBE_DIARIZE` | Enable diarization by default | `false` |
+| `TRANSCRIBE_WORD_TIMESTAMPS` | Enable word timestamps by default | `false` |
+
+## Model Sizes
+
+| Model | Size | English | Multilingual | Speed |
+|-------|------|---------|-------------|-------|
+| `tiny` | ~75 MB | Good | Fair | Fastest |
+| `base` | ~150 MB | Better | Good | Fast |
+| `small` | ~500 MB | Great | Great | Moderate |
+| `medium` | ~1.5 GB | Excellent | Excellent | Slower |
+| `large-v3` | ~3 GB | Best | Best | Slowest |
+
+Models are auto-downloaded on first use and cached locally.
 
 ## Development
 
-### Setup
-
 ```bash
-# Clone repository
-git clone https://github.com/jmagly/transcribe-cli.git
+git clone https://github.com/robit-man/transcribe-cli.git
 cd transcribe-cli
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# or: venv\Scripts\activate  # Windows
-
-# Install with dev dependencies
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Install pre-commit hooks
-pre-commit install
-```
-
-### Testing
-
-```bash
 # Run tests
 pytest
 
-# Run with coverage
-pytest --cov=src/transcribe_cli --cov-report=html
-
-# Run linting
-black src tests
-flake8 src tests
-mypy src
+# Run tests without coverage
+pytest tests/unit/ -v --no-cov
 ```
 
-### Project Structure
+## Uninstall
 
-```
-src/transcribe_cli/
-├── cli/          # CLI commands (Typer)
-├── config/       # Configuration management
-├── core/         # Audio extraction, transcription
-├── output/       # Output formatters (TXT, SRT)
-├── models/       # Data models
-└── utils/        # Utilities
+```bash
+rm -rf ~/.local/share/transcribe-cli
+rm -f ~/.local/bin/transcribe ~/.local/bin/transcribe-cli
 ```
 
 ## License
 
 MIT
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Run `pytest` and `pre-commit run --all-files`
-5. Submit a pull request
-
 ## Acknowledgments
 
-- [OpenAI Whisper](https://openai.com/research/whisper) for speech recognition
-- [FFmpeg](https://ffmpeg.org/) for audio/video processing
-- [Typer](https://typer.tiangolo.com/) for CLI framework
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — CTranslate2 Whisper implementation
+- [pyannote.audio](https://github.com/pyannote/pyannote-audio) — Speaker diarization
+- [FFmpeg](https://ffmpeg.org/) — Audio/video processing
+- [Typer](https://typer.tiangolo.com/) — CLI framework
+- [Rich](https://github.com/Textualize/rich) — Terminal formatting

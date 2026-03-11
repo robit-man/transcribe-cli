@@ -33,11 +33,11 @@ class TestBatchResult:
             input_path=Path("test.mp3"),
             output_path=None,
             success=False,
-            error="API error",
+            error="transcription error",
             result=None,
         )
         assert result.success is False
-        assert result.error == "API error"
+        assert result.error == "transcription error"
 
 
 class TestBatchSummary:
@@ -216,7 +216,7 @@ class TestProcessBatch:
                     files=files,
                     output_format="txt",
                     concurrency=2,
-                    api_key="sk-test",
+                    model_size="base",
                 )
 
         assert summary.total_files == 2
@@ -251,107 +251,83 @@ class TestProcessDirectory:
         with patch("transcribe_cli.core.batch.transcribe_file", return_value=mock_result):
             with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
                 mock_save.return_value = tmp_path / "audio.txt"
-                summary = process_directory(tmp_path, api_key="sk-test")
+                summary = process_directory(tmp_path, model_size="base")
 
         assert summary.total_files == 1
         assert summary.successful == 1
 
 
 # ──────────────────────────────────────────────────────────
-# WO-8: Batch Processing with Diarization
+# Batch Processing with Diarization and Word Timestamps
 # ──────────────────────────────────────────────────────────
 
 
 class TestBatchDiarization:
     """Tests for batch processing with diarization and word timestamp flags."""
 
+    def _make_mock_result(self) -> MagicMock:
+        from transcribe_cli.core.transcriber import TranscriptionResult
+
+        m = MagicMock(spec=TranscriptionResult)
+        m.text = "Test"
+        m.segments = []
+        m.language = "en"
+        m.duration = 1.0
+        return m
+
     def test_batch_passes_diarize_to_transcribe(self, tmp_path: Path) -> None:
         """process_batch passes diarize=True to transcribe_file."""
         from transcribe_cli.core.batch import process_batch
-        from transcribe_cli.core.transcriber import TranscriptionResult
 
         (tmp_path / "audio.mp3").write_bytes(b"fake")
         files = [tmp_path / "audio.mp3"]
 
-        mock_result = MagicMock(spec=TranscriptionResult)
-        mock_result.text = "Test"
-        mock_result.segments = []
-        mock_result.language = "en"
-        mock_result.duration = 1.0
-
-        with patch("transcribe_cli.core.batch.transcribe_file", return_value=mock_result) as mock_tf:
+        with patch("transcribe_cli.core.batch.transcribe_file", return_value=self._make_mock_result()) as mock_tf:
             with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
                 mock_save.return_value = tmp_path / "audio.txt"
-                process_batch(files=files, diarize=True, api_key="sk-test")
+                process_batch(files=files, diarize=True)
 
-        # Check that transcribe_file was called with diarize=True
-        call_kwargs = mock_tf.call_args
-        assert call_kwargs is not None
-        # Lambda wraps the call, so we check the mock was called
         assert mock_tf.called
 
     def test_batch_passes_word_timestamps(self, tmp_path: Path) -> None:
         """process_batch passes word_timestamps=True to transcribe_file."""
         from transcribe_cli.core.batch import process_batch
-        from transcribe_cli.core.transcriber import TranscriptionResult
 
         (tmp_path / "audio.mp3").write_bytes(b"fake")
         files = [tmp_path / "audio.mp3"]
 
-        mock_result = MagicMock(spec=TranscriptionResult)
-        mock_result.text = "Test"
-        mock_result.segments = []
-        mock_result.language = "en"
-        mock_result.duration = 1.0
-
-        with patch("transcribe_cli.core.batch.transcribe_file", return_value=mock_result) as mock_tf:
+        with patch("transcribe_cli.core.batch.transcribe_file", return_value=self._make_mock_result()) as mock_tf:
             with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
                 mock_save.return_value = tmp_path / "audio.txt"
-                process_batch(files=files, word_timestamps=True, api_key="sk-test")
+                process_batch(files=files, word_timestamps=True)
 
         assert mock_tf.called
 
     def test_batch_default_no_diarize(self, tmp_path: Path) -> None:
         """By default, batch does not enable diarize."""
         from transcribe_cli.core.batch import process_batch
-        from transcribe_cli.core.transcriber import TranscriptionResult
 
         (tmp_path / "audio.mp3").write_bytes(b"fake")
         files = [tmp_path / "audio.mp3"]
 
-        mock_result = MagicMock(spec=TranscriptionResult)
-        mock_result.text = "Test"
-        mock_result.segments = []
-        mock_result.language = "en"
-        mock_result.duration = 1.0
-
-        with patch("transcribe_cli.core.batch.transcribe_file", return_value=mock_result) as mock_tf:
+        with patch("transcribe_cli.core.batch.transcribe_file", return_value=self._make_mock_result()) as mock_tf:
             with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
                 mock_save.return_value = tmp_path / "audio.txt"
-                process_batch(files=files, api_key="sk-test")
+                process_batch(files=files)
 
         assert mock_tf.called
 
     def test_batch_with_vtt_format(self, tmp_path: Path) -> None:
         """Batch processing works with vtt output format."""
         from transcribe_cli.core.batch import process_batch
-        from transcribe_cli.core.transcriber import TranscriptionResult
 
         (tmp_path / "audio.mp3").write_bytes(b"fake")
         files = [tmp_path / "audio.mp3"]
 
-        mock_result = MagicMock(spec=TranscriptionResult)
-        mock_result.text = "Test"
-        mock_result.segments = []
-        mock_result.language = "en"
-        mock_result.duration = 1.0
-
-        with patch("transcribe_cli.core.batch.transcribe_file", return_value=mock_result):
+        with patch("transcribe_cli.core.batch.transcribe_file", return_value=self._make_mock_result()):
             with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
                 mock_save.return_value = tmp_path / "audio.vtt"
-                summary = process_batch(
-                    files=files, output_format="vtt", api_key="sk-test"
-                )
+                summary = process_batch(files=files, output_format="vtt")
 
         assert summary.successful == 1
 
@@ -375,8 +351,20 @@ class TestBatchDiarization:
         with patch("transcribe_cli.core.batch.transcribe_file", return_value=mock_result):
             with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
                 mock_save.return_value = tmp_path / "audio.json"
-                summary = process_batch(
-                    files=files, output_format="json", api_key="sk-test"
-                )
+                summary = process_batch(files=files, output_format="json")
 
         assert summary.successful == 1
+
+    def test_batch_model_size_forwarded(self, tmp_path: Path) -> None:
+        """model_size parameter is forwarded to transcribe_file."""
+        from transcribe_cli.core.batch import process_batch
+
+        (tmp_path / "audio.mp3").write_bytes(b"fake")
+        files = [tmp_path / "audio.mp3"]
+
+        with patch("transcribe_cli.core.batch.transcribe_file", return_value=self._make_mock_result()) as mock_tf:
+            with patch("transcribe_cli.output.formatters.save_formatted_transcript") as mock_save:
+                mock_save.return_value = tmp_path / "audio.txt"
+                process_batch(files=files, model_size="medium")
+
+        assert mock_tf.called

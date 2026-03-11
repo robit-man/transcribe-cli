@@ -1,63 +1,22 @@
-"""Transcription client for OpenAI Whisper API.
+"""Transcription backend using faster-whisper local models.
 
-Implements Sprint 3: Transcription Client
-- OpenAI Whisper API integration
-- Retry logic with exponential backoff
-- Response parsing with timestamps
+Runs fully locally — no API key required.
+Supports: tiny, base, small, medium, large-v3 model sizes.
 """
 
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
-
-from openai import APIConnectionError, APIStatusError, OpenAI, RateLimitError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from typing import Optional
 
 from .extractor import extract_audio, is_video_file
-from .ffmpeg import FFmpegNotFoundError
+from .ffmpeg import FFmpegNotFoundError  # noqa: F401 — re-exported for callers
 
 
 class TranscriptionError(Exception):
     """Raised when transcription fails."""
 
     pass
-
-
-class APIKeyMissingError(Exception):
-    """Raised when OpenAI API key is not configured."""
-
-    def __init__(self) -> None:
-        message = (
-            "OpenAI API key is not configured.\n\n"
-            "Set the OPENAI_API_KEY environment variable:\n"
-            "  export OPENAI_API_KEY=sk-your-api-key-here\n\n"
-            "Or create a .env file with:\n"
-            "  OPENAI_API_KEY=sk-your-api-key-here\n\n"
-            "Get your API key at: https://platform.openai.com/api-keys"
-        )
-        super().__init__(message)
-
-
-class FileTooLargeError(Exception):
-    """Raised when file exceeds Whisper API size limit."""
-
-    def __init__(self, path: Path, size_mb: float, max_mb: float = 25.0) -> None:
-        message = (
-            f"File is too large for Whisper API: {size_mb:.1f}MB\n"
-            f"Maximum allowed size: {max_mb}MB\n"
-            f"File: {path}\n\n"
-            "For large files, use chunking (available in future release)."
-        )
-        super().__init__(message)
-        self.path = path
-        self.size_mb = size_mb
-        self.max_mb = max_mb
 
 
 @dataclass
@@ -104,178 +63,71 @@ class TranscriptionResult:
         return len(self.text.split())
 
 
-# Maximum file size for Whisper API (25MB)
-MAX_FILE_SIZE_MB = 25.0
-MAX_FILE_SIZE_BYTES = int(MAX_FILE_SIZE_MB * 1024 * 1024)
+# Module-level model cache: (model_size, device, compute_type) -> WhisperModel
+_model_cache: dict[tuple[str, str, str], object] = {}
 
 
-def _check_file_size(path: Path) -> None:
-    """Check if file is within Whisper API limits.
-
-    Args:
-        path: Path to audio file.
-
-    Raises:
-        FileTooLargeError: If file exceeds 25MB limit.
-    """
-    size = path.stat().st_size
-    size_mb = size / (1024 * 1024)
-    if size > MAX_FILE_SIZE_BYTES:
-        raise FileTooLargeError(path, size_mb, MAX_FILE_SIZE_MB)
-
-
-def _create_client(api_key: Optional[str] = None) -> OpenAI:
-    """Create OpenAI client.
+def _get_model(model_size: str, device: str, compute_type: str) -> object:
+    """Return a cached WhisperModel, loading it on first use.
 
     Args:
-        api_key: Optional API key. If not provided, uses OPENAI_API_KEY env var.
+        model_size: Whisper model variant (e.g. "base", "large-v3").
+        device: Compute device ("auto", "cpu", "cuda").
+        compute_type: Precision mode ("auto", "float16", "float32", "int8").
 
     Returns:
-        Configured OpenAI client.
+        A loaded WhisperModel instance.
 
     Raises:
-        APIKeyMissingError: If no API key is available.
+        TranscriptionError: If faster-whisper is not installed or the model
+            cannot be loaded.
     """
-    try:
-        client = OpenAI(api_key=api_key)
-        # Validate key is present (OpenAI client doesn't validate until first call)
-        if not client.api_key:
-            raise APIKeyMissingError()
-        return client
-    except Exception as e:
-        if "api_key" in str(e).lower():
-            raise APIKeyMissingError() from e
-        raise
+    key = (model_size, device, compute_type)
+    if key not in _model_cache:
+        try:
+            from faster_whisper import WhisperModel  # type: ignore[import]
+        except ImportError as exc:
+            raise TranscriptionError(
+                "faster-whisper is not installed. "
+                "Run: pip install faster-whisper"
+            ) from exc
 
-
-@retry(
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    reraise=True,
-)
-def _transcribe_audio_file(
-    client: OpenAI,
-    audio_path: Path,
-    language: Optional[str] = None,
-    response_format: Literal["json", "text", "verbose_json"] = "verbose_json",
-    word_timestamps: bool = False,
-) -> dict:
-    """Call Whisper API to transcribe audio file.
-
-    Args:
-        client: OpenAI client.
-        audio_path: Path to audio file.
-        language: Optional language code (e.g., "en", "es").
-        response_format: API response format.
-        word_timestamps: Whether to request word-level timestamps.
-
-    Returns:
-        API response as dictionary.
-
-    Raises:
-        RateLimitError: On rate limit (will be retried).
-        APIConnectionError: On connection issues (will be retried).
-        APIStatusError: On other API errors.
-    """
-    with open(audio_path, "rb") as audio_file:
-        kwargs: dict = {
-            "model": "whisper-1",
-            "file": audio_file,
-            "response_format": response_format,
-        }
-        if language and language != "auto":
-            kwargs["language"] = language
-        if word_timestamps and response_format == "verbose_json":
-            kwargs["timestamp_granularities"] = ["segment", "word"]
-
-        response = client.audio.transcriptions.create(**kwargs)
-
-    # Handle different response formats
-    if response_format == "text":
-        return {"text": response}
-    elif hasattr(response, "model_dump"):
-        return response.model_dump()
-    else:
-        return dict(response)
-
-
-def _parse_segments(
-    response: dict, word_timestamps: bool = False
-) -> list[TranscriptionSegment]:
-    """Parse segments from Whisper API response.
-
-    Args:
-        response: API response dictionary.
-        word_timestamps: Whether to parse word-level timestamps.
-
-    Returns:
-        List of TranscriptionSegment objects.
-    """
-    segments = []
-    raw_segments = response.get("segments", [])
-
-    for i, seg in enumerate(raw_segments):
-        segments.append(
-            TranscriptionSegment(
-                id=seg.get("id", i),
-                start=seg.get("start", 0.0),
-                end=seg.get("end", 0.0),
-                text=seg.get("text", "").strip(),
+        try:
+            _model_cache[key] = WhisperModel(
+                model_size,
+                device=device,
+                compute_type=compute_type,
             )
-        )
+        except Exception as exc:
+            raise TranscriptionError(
+                f"Failed to load Whisper model '{model_size}': {exc}"
+            ) from exc
 
-    # Assign word-level timestamps to segments if available
-    if word_timestamps:
-        raw_words = response.get("words", [])
-        _assign_words_to_segments(segments, raw_words)
-
-    return segments
-
-
-def _assign_words_to_segments(
-    segments: list[TranscriptionSegment], raw_words: list[dict]
-) -> None:
-    """Assign word timestamps to their parent segments by time overlap.
-
-    Args:
-        segments: List of transcription segments.
-        raw_words: List of raw word dicts from API with word, start, end.
-    """
-    for raw_word in raw_words:
-        word = WordTimestamp(
-            word=raw_word.get("word", ""),
-            start=raw_word.get("start", 0.0),
-            end=raw_word.get("end", 0.0),
-        )
-        # Find the segment this word belongs to (word start falls within segment)
-        for seg in segments:
-            if seg.start <= word.start < seg.end:
-                seg.words.append(word)
-                break
-        else:
-            # If no segment matched, assign to last segment if any
-            if segments:
-                segments[-1].words.append(word)
+    return _model_cache[key]
 
 
 def transcribe_file(
     input_path: Path,
     output_path: Optional[Path] = None,
     language: str = "auto",
-    api_key: Optional[str] = None,
+    model_size: str = "base",
+    device: str = "auto",
+    compute_type: str = "auto",
     diarize: bool = False,
     word_timestamps: bool = False,
 ) -> TranscriptionResult:
-    """Transcribe an audio or video file.
+    """Transcribe an audio or video file using a local Whisper model.
 
     For video files, audio is automatically extracted first.
+    No API key is required — inference runs entirely on the local machine.
 
     Args:
         input_path: Path to audio or video file.
         output_path: Optional path for output text file.
-        language: Language code or "auto" for detection.
-        api_key: Optional OpenAI API key.
+        language: BCP-47 language code (e.g. "en") or "auto" for detection.
+        model_size: Model variant to use (tiny, base, small, medium, large-v3).
+        device: Compute device — "auto", "cpu", or "cuda".
+        compute_type: Precision — "auto", "float16", "float32", or "int8".
         diarize: Whether to run speaker diarization.
         word_timestamps: Whether to extract word-level timestamps.
 
@@ -283,26 +135,23 @@ def transcribe_file(
         TranscriptionResult with transcribed text and metadata.
 
     Raises:
-        APIKeyMissingError: If API key not configured.
-        FileTooLargeError: If file exceeds 25MB.
-        FFmpegNotFoundError: If FFmpeg needed but not installed.
-        TranscriptionError: If transcription fails.
+        FileNotFoundError: If input_path does not exist.
+        FFmpegNotFoundError: If FFmpeg is needed but not installed.
+        TranscriptionError: If transcription fails for any reason.
     """
     input_path = Path(input_path).resolve()
 
     if not input_path.exists():
         raise FileNotFoundError(f"File not found: {input_path}")
 
-    # Create client (validates API key)
-    client = _create_client(api_key)
+    model = _get_model(model_size, device, compute_type)
 
-    # Handle video files - extract audio first
     audio_path = input_path
     temp_audio = None
 
     try:
+        # Extract audio from video files
         if is_video_file(input_path):
-            # Extract audio to temporary file
             temp_dir = tempfile.mkdtemp(prefix="transcribe_")
             temp_audio = Path(temp_dir) / f"{input_path.stem}.mp3"
             extraction_result = extract_audio(
@@ -312,35 +161,51 @@ def transcribe_file(
             )
             audio_path = extraction_result.output_path
 
-        # Check file size
-        _check_file_size(audio_path)
-
-        # Call Whisper API
+        # Run local transcription
+        lang_arg = language if language != "auto" else None
         try:
-            response = _transcribe_audio_file(
-                client=client,
-                audio_path=audio_path,
-                language=language if language != "auto" else None,
+            segments_gen, info = model.transcribe(  # type: ignore[union-attr]
+                str(audio_path),
+                language=lang_arg,
                 word_timestamps=word_timestamps,
             )
-        except RateLimitError as e:
-            raise TranscriptionError(
-                f"Rate limit exceeded after retries. Please wait and try again.\n{e}"
-            ) from e
-        except APIStatusError as e:
-            raise TranscriptionError(f"API error: {e.message}") from e
-        except APIConnectionError as e:
-            raise TranscriptionError(
-                f"Connection error after retries. Check your internet connection.\n{e}"
-            ) from e
+        except Exception as exc:
+            raise TranscriptionError(f"Transcription failed: {exc}") from exc
 
-        # Parse response
-        text = response.get("text", "")
-        segments = _parse_segments(response, word_timestamps=word_timestamps)
-        detected_language = response.get("language", "unknown")
-        duration = response.get("duration")
+        # Materialise the generator into structured segments
+        segments: list[TranscriptionSegment] = []
+        text_parts: list[str] = []
 
-        # Run speaker diarization if requested
+        for i, seg in enumerate(segments_gen):
+            words: list[WordTimestamp] = []
+            if word_timestamps and seg.words:
+                for w in seg.words:
+                    words.append(
+                        WordTimestamp(
+                            word=w.word,
+                            start=w.start,
+                            end=w.end,
+                        )
+                    )
+
+            seg_text = seg.text.strip()
+            text_parts.append(seg_text)
+
+            segments.append(
+                TranscriptionSegment(
+                    id=i,
+                    start=seg.start,
+                    end=seg.end,
+                    text=seg_text,
+                    words=words,
+                )
+            )
+
+        full_text = " ".join(text_parts)
+        detected_language = info.language if info.language else "unknown"
+        duration: Optional[float] = getattr(info, "duration", None)
+
+        # Optional speaker diarization
         speakers: list[str] = []
         if diarize:
             from .diarization import DiarizationError, merge_diarization, run_diarization
@@ -351,17 +216,16 @@ def transcribe_file(
                 speakers = sorted(
                     {s.speaker_id for s in segments if s.speaker_id is not None}
                 )
-            except DiarizationError as e:
-                raise TranscriptionError(f"Diarization failed: {e}") from e
+            except DiarizationError as exc:
+                raise TranscriptionError(f"Diarization failed: {exc}") from exc
 
-        # Determine output path
         if output_path is None:
             output_path = input_path.with_suffix(".txt")
 
         return TranscriptionResult(
             input_path=input_path,
             output_path=output_path,
-            text=text,
+            text=full_text,
             segments=segments,
             language=detected_language,
             duration=duration,
@@ -369,7 +233,6 @@ def transcribe_file(
         )
 
     finally:
-        # Clean up temporary audio file
         if temp_audio and temp_audio.exists():
             temp_audio.unlink()
             temp_audio.parent.rmdir()

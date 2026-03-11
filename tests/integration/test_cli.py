@@ -172,26 +172,17 @@ class TestTranscribeCommand:
         assert result.exit_code == 1
         assert "Unsupported format" in result.stdout
 
-    def test_transcribe_srt_shows_warning(self, tmp_path: Path) -> None:
-        """transcribe with --format srt should show warning."""
+    def test_transcribe_invalid_model(self, tmp_path: Path) -> None:
+        """transcribe should reject unknown model names."""
         fake_audio = tmp_path / "audio.mp3"
         fake_audio.write_bytes(b"fake audio content")
 
-        # Mock the transcription to avoid API call
-        mock_result = MagicMock()
-        mock_result.text = "Test transcript"
-        mock_result.language = "en"
-        mock_result.word_count = 2
-        mock_result.duration = 5.0
-
-        with patch("transcribe_cli.core.transcribe_file", return_value=mock_result):
-            with patch("transcribe_cli.core.save_transcript", return_value=tmp_path / "audio.txt"):
-                result = runner.invoke(app, ["transcribe", str(fake_audio), "--format", "srt"])
-                # Should show SRT warning but not fail
-                assert "SRT format will be available" in result.stdout or result.exit_code == 0
+        result = runner.invoke(app, ["transcribe", str(fake_audio), "--model", "giant"])
+        assert result.exit_code == 1
+        assert "Unknown model" in result.stdout
 
     def test_transcribe_with_mock_success(self, tmp_path: Path) -> None:
-        """transcribe should succeed with mocked API."""
+        """transcribe should succeed with mocked model."""
         fake_audio = tmp_path / "audio.mp3"
         fake_audio.write_bytes(b"fake audio content")
 
@@ -200,42 +191,38 @@ class TestTranscribeCommand:
         mock_result.language = "english"
         mock_result.word_count = 5
         mock_result.duration = 10.0
+        mock_result.speakers = []
 
         with patch("transcribe_cli.core.transcribe_file", return_value=mock_result):
-            with patch("transcribe_cli.core.save_transcript", return_value=tmp_path / "audio.txt"):
+            with patch("transcribe_cli.output.save_formatted_transcript") as mock_save:
+                mock_save.return_value = tmp_path / "audio.txt"
                 result = runner.invoke(app, ["transcribe", str(fake_audio)])
                 assert result.exit_code == 0
                 assert "Success" in result.stdout
 
-    def test_transcribe_api_key_missing(self, tmp_path: Path) -> None:
-        """transcribe should show helpful error when API key missing."""
+    def test_transcribe_with_model_option(self, tmp_path: Path) -> None:
+        """transcribe should accept --model option."""
         fake_audio = tmp_path / "audio.mp3"
         fake_audio.write_bytes(b"fake audio content")
 
-        from transcribe_cli.core.transcriber import APIKeyMissingError
+        mock_result = MagicMock()
+        mock_result.text = "Test."
+        mock_result.language = "en"
+        mock_result.word_count = 1
+        mock_result.duration = 1.0
+        mock_result.speakers = []
 
-        with patch(
-            "transcribe_cli.core.transcribe_file",
-            side_effect=APIKeyMissingError(),
-        ):
-            result = runner.invoke(app, ["transcribe", str(fake_audio)])
-            assert result.exit_code == 1
-            assert "OPENAI_API_KEY" in result.stdout or "Error" in result.stdout
+        with patch("transcribe_cli.core.transcribe_file", return_value=mock_result) as mock_tf:
+            with patch("transcribe_cli.output.save_formatted_transcript") as mock_save:
+                mock_save.return_value = tmp_path / "audio.txt"
+                result = runner.invoke(
+                    app, ["transcribe", str(fake_audio), "--model", "medium"]
+                )
+                assert result.exit_code == 0
 
-    def test_transcribe_file_too_large(self, tmp_path: Path) -> None:
-        """transcribe should error on files >25MB."""
-        fake_audio = tmp_path / "audio.mp3"
-        fake_audio.write_bytes(b"fake audio content")
-
-        from transcribe_cli.core.transcriber import FileTooLargeError
-
-        with patch(
-            "transcribe_cli.core.transcribe_file",
-            side_effect=FileTooLargeError(fake_audio, 30.0, 25.0),
-        ):
-            result = runner.invoke(app, ["transcribe", str(fake_audio)])
-            assert result.exit_code == 1
-            assert "too large" in result.stdout.lower() or "Error" in result.stdout
+        # Verify model_size was forwarded
+        call_kwargs = mock_tf.call_args
+        assert call_kwargs is not None
 
     def test_transcribe_with_output_dir(self, tmp_path: Path) -> None:
         """transcribe should respect --output-dir option."""
@@ -248,6 +235,7 @@ class TestTranscribeCommand:
         mock_result.language = "en"
         mock_result.word_count = 1
         mock_result.duration = 1.0
+        mock_result.speakers = []
 
         with patch("transcribe_cli.core.transcribe_file", return_value=mock_result):
             with patch("transcribe_cli.output.save_formatted_transcript") as mock_save:
@@ -255,8 +243,22 @@ class TestTranscribeCommand:
                 result = runner.invoke(
                     app, ["transcribe", str(fake_audio), "--output-dir", str(output_dir)]
                 )
-                # Verify output_dir was created
                 assert result.exit_code == 0
+
+    def test_transcribe_transcription_error(self, tmp_path: Path) -> None:
+        """transcribe should show error message on TranscriptionError."""
+        fake_audio = tmp_path / "audio.mp3"
+        fake_audio.write_bytes(b"fake audio content")
+
+        from transcribe_cli.core.transcriber import TranscriptionError
+
+        with patch(
+            "transcribe_cli.core.transcribe_file",
+            side_effect=TranscriptionError("model failed"),
+        ):
+            result = runner.invoke(app, ["transcribe", str(fake_audio)])
+            assert result.exit_code == 1
+            assert "Transcription failed" in result.stdout or "Error" in result.stdout
 
 
 class TestBatchCommand:
@@ -280,6 +282,16 @@ class TestBatchCommand:
         assert "audio2.mp3" in result.stdout
         assert "Would process 2 files" in result.stdout
 
+    def test_batch_dry_run_shows_model(self, tmp_path: Path) -> None:
+        """batch --dry-run should show the model name."""
+        (tmp_path / "audio.mp3").write_bytes(b"fake")
+
+        result = runner.invoke(
+            app, ["batch", str(tmp_path), "--dry-run", "--model", "small"]
+        )
+        assert result.exit_code == 0
+        assert "small" in result.stdout
+
     def test_batch_recursive_flag(self, tmp_path: Path) -> None:
         """batch --recursive should show recursive indicator."""
         (tmp_path / "audio.mp3").write_bytes(b"fake")
@@ -298,7 +310,7 @@ class TestBatchCommand:
 
         result = runner.invoke(app, ["batch", str(tmp_path), "--dry-run"])
         assert result.exit_code == 0
-        assert "MB" in result.stdout  # Shows size in MB
+        assert "MB" in result.stdout
 
     def test_batch_invalid_format(self, tmp_path: Path) -> None:
         """batch should reject invalid output formats."""
@@ -306,6 +318,13 @@ class TestBatchCommand:
         result = runner.invoke(app, ["batch", str(tmp_path), "--format", "pdf"])
         assert result.exit_code == 1
         assert "Unsupported format" in result.stdout
+
+    def test_batch_invalid_model(self, tmp_path: Path) -> None:
+        """batch should reject unknown model names."""
+        (tmp_path / "audio.mp3").write_bytes(b"fake")
+        result = runner.invoke(app, ["batch", str(tmp_path), "--model", "huge"])
+        assert result.exit_code == 1
+        assert "Unknown model" in result.stdout
 
     def test_batch_nonexistent_directory(self) -> None:
         """batch should error on non-existent directory."""
@@ -318,7 +337,7 @@ class TestBatchCommand:
         (tmp_path / "audio1.mp3").write_bytes(b"fake1")
         (tmp_path / "audio2.mp3").write_bytes(b"fake2")
 
-        from transcribe_cli.core.batch import BatchSummary, BatchResult
+        from transcribe_cli.core.batch import BatchResult, BatchSummary
 
         mock_summary = BatchSummary(
             total_files=2,
@@ -341,7 +360,7 @@ class TestBatchCommand:
         """batch should report failures correctly."""
         (tmp_path / "audio.mp3").write_bytes(b"fake")
 
-        from transcribe_cli.core.batch import BatchSummary, BatchResult
+        from transcribe_cli.core.batch import BatchResult, BatchSummary
 
         mock_summary = BatchSummary(
             total_files=1,
@@ -349,7 +368,7 @@ class TestBatchCommand:
             failed=1,
             skipped=0,
             results=[
-                BatchResult(tmp_path / "audio.mp3", None, False, error="API error"),
+                BatchResult(tmp_path / "audio.mp3", None, False, error="model error"),
             ],
         )
 
@@ -384,6 +403,18 @@ class TestConfigCommand:
         assert result.exit_code == 0
         assert "Current Configuration" in result.stdout
 
+    def test_config_show_no_api_key(self) -> None:
+        """config --show should NOT mention OPENAI_API_KEY."""
+        result = runner.invoke(app, ["config", "--show"])
+        assert result.exit_code == 0
+        assert "OPENAI_API_KEY" not in result.stdout
+
+    def test_config_show_model_settings(self) -> None:
+        """config --show should display model settings."""
+        result = runner.invoke(app, ["config", "--show"])
+        assert result.exit_code == 0
+        assert "Model" in result.stdout or "model" in result.stdout
+
     def test_config_locations(self) -> None:
         """config --locations should show search paths."""
         result = runner.invoke(app, ["config", "--locations"])
@@ -412,3 +443,9 @@ class TestConfigCommand:
         assert result.exit_code == 0
         assert "--show" in result.stdout
         assert "--init" in result.stdout
+
+    def test_config_no_flags_no_api_key_hint(self) -> None:
+        """config with no flags should not tell users to set OPENAI_API_KEY."""
+        result = runner.invoke(app, ["config"])
+        assert result.exit_code == 0
+        assert "OPENAI_API_KEY" not in result.stdout

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
-from .extractor import SUPPORTED_EXTENSIONS, is_supported_file
+from .extractor import SUPPORTED_EXTENSIONS, is_supported_file  # noqa: F401
 from .transcriber import (
     TranscriptionResult,
     transcribe_file,
@@ -92,7 +92,9 @@ async def _process_file_async(
     output_dir: Optional[Path],
     output_format: OutputFormat,
     language: str,
-    api_key: Optional[str],
+    model_size: str,
+    device: str,
+    compute_type: str,
     semaphore: asyncio.Semaphore,
     diarize: bool = False,
     word_timestamps: bool = False,
@@ -105,7 +107,9 @@ async def _process_file_async(
         output_dir: Output directory (None = same as input).
         output_format: Output format.
         language: Language code or "auto".
-        api_key: OpenAI API key.
+        model_size: Whisper model size to use.
+        device: Compute device.
+        compute_type: Precision mode.
         semaphore: Semaphore for concurrency control.
         diarize: Whether to run speaker diarization.
         word_timestamps: Whether to extract word-level timestamps.
@@ -125,7 +129,7 @@ async def _process_file_async(
             else:
                 output_path = input_path.with_suffix(f".{output_format}")
 
-            # Run transcription in thread pool (blocking I/O)
+            # Run transcription in thread pool (CPU-bound)
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -133,7 +137,9 @@ async def _process_file_async(
                     input_path=input_path,
                     output_path=output_path,
                     language=language,
-                    api_key=api_key,
+                    model_size=model_size,
+                    device=device,
+                    compute_type=compute_type,
                     diarize=diarize,
                     word_timestamps=word_timestamps,
                 ),
@@ -175,7 +181,9 @@ async def process_batch_async(
     output_format: OutputFormat = "txt",
     language: str = "auto",
     concurrency: int = 5,
-    api_key: Optional[str] = None,
+    model_size: str = "base",
+    device: str = "auto",
+    compute_type: str = "auto",
     diarize: bool = False,
     word_timestamps: bool = False,
     progress_callback: Optional[Callable[[Path, str], None]] = None,
@@ -188,7 +196,9 @@ async def process_batch_async(
         output_format: Output format for all files.
         language: Language code or "auto".
         concurrency: Maximum concurrent transcriptions.
-        api_key: OpenAI API key.
+        model_size: Whisper model size to use.
+        device: Compute device.
+        compute_type: Precision mode.
         diarize: Whether to run speaker diarization.
         word_timestamps: Whether to extract word-level timestamps.
         progress_callback: Optional callback(path, status) for progress.
@@ -220,7 +230,9 @@ async def process_batch_async(
             output_dir=output_dir,
             output_format=output_format,
             language=language,
-            api_key=api_key,
+            model_size=model_size,
+            device=device,
+            compute_type=compute_type,
             semaphore=semaphore,
             diarize=diarize,
             word_timestamps=word_timestamps,
@@ -251,7 +263,9 @@ def process_batch(
     output_format: OutputFormat = "txt",
     language: str = "auto",
     concurrency: int = 5,
-    api_key: Optional[str] = None,
+    model_size: str = "base",
+    device: str = "auto",
+    compute_type: str = "auto",
     diarize: bool = False,
     word_timestamps: bool = False,
     progress_callback: Optional[Callable[[Path, str], None]] = None,
@@ -264,7 +278,9 @@ def process_batch(
         output_format: Output format for all files.
         language: Language code or "auto".
         concurrency: Maximum concurrent transcriptions.
-        api_key: OpenAI API key.
+        model_size: Whisper model size to use.
+        device: Compute device.
+        compute_type: Precision mode.
         diarize: Whether to run speaker diarization.
         word_timestamps: Whether to extract word-level timestamps.
         progress_callback: Optional callback(path, status) for progress.
@@ -279,7 +295,9 @@ def process_batch(
             output_format=output_format,
             language=language,
             concurrency=concurrency,
-            api_key=api_key,
+            model_size=model_size,
+            device=device,
+            compute_type=compute_type,
             diarize=diarize,
             word_timestamps=word_timestamps,
             progress_callback=progress_callback,
@@ -294,7 +312,9 @@ def process_directory(
     language: str = "auto",
     concurrency: int = 5,
     recursive: bool = False,
-    api_key: Optional[str] = None,
+    model_size: str = "base",
+    device: str = "auto",
+    compute_type: str = "auto",
     diarize: bool = False,
     word_timestamps: bool = False,
     progress_callback: Optional[Callable[[Path, str], None]] = None,
@@ -308,7 +328,9 @@ def process_directory(
         language: Language code or "auto".
         concurrency: Maximum concurrent transcriptions.
         recursive: Whether to scan subdirectories.
-        api_key: OpenAI API key.
+        model_size: Whisper model size to use.
+        device: Compute device.
+        compute_type: Precision mode.
         diarize: Whether to run speaker diarization.
         word_timestamps: Whether to extract word-level timestamps.
         progress_callback: Optional callback(path, status) for progress.
@@ -324,7 +346,9 @@ def process_directory(
         output_format=output_format,
         language=language,
         concurrency=concurrency,
-        api_key=api_key,
+        model_size=model_size,
+        device=device,
+        compute_type=compute_type,
         diarize=diarize,
         word_timestamps=word_timestamps,
         progress_callback=progress_callback,

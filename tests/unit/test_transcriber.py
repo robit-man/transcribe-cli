@@ -4,18 +4,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from openai import APIConnectionError, RateLimitError
 
 from transcribe_cli.core.transcriber import (
-    APIKeyMissingError,
-    FileTooLargeError,
     TranscriptionError,
     TranscriptionResult,
     TranscriptionSegment,
-    _check_file_size,
-    _create_client,
-    _parse_segments,
+    WordTimestamp,
     save_transcript,
+    transcribe_file,
 )
 
 
@@ -67,81 +63,15 @@ class TestTranscriptionResult:
         assert result.duration == 5.5
 
 
-class TestCheckFileSize:
-    """Tests for file size validation."""
+class TestWordTimestamp:
+    """Tests for WordTimestamp dataclass."""
 
-    def test_small_file_passes(self, tmp_path: Path) -> None:
-        """Small files pass validation."""
-        small_file = tmp_path / "small.mp3"
-        small_file.write_bytes(b"x" * 1024)  # 1KB
-        _check_file_size(small_file)  # Should not raise
-
-    def test_large_file_raises(self, tmp_path: Path) -> None:
-        """Files over 25MB raise FileTooLargeError."""
-        large_file = tmp_path / "large.mp3"
-        # Create a file just over 25MB
-        large_file.write_bytes(b"x" * (26 * 1024 * 1024))
-
-        with pytest.raises(FileTooLargeError) as exc_info:
-            _check_file_size(large_file)
-
-        assert exc_info.value.size_mb > 25.0
-        assert "too large" in str(exc_info.value).lower()
-
-
-class TestCreateClient:
-    """Tests for OpenAI client creation."""
-
-    def test_client_with_api_key(self) -> None:
-        """Client is created with provided API key."""
-        with patch("transcribe_cli.core.transcriber.OpenAI") as mock_openai:
-            mock_client = MagicMock()
-            mock_client.api_key = "sk-test"
-            mock_openai.return_value = mock_client
-
-            client = _create_client("sk-test")
-            assert client is mock_client
-            mock_openai.assert_called_once_with(api_key="sk-test")
-
-    def test_client_missing_key_raises(self) -> None:
-        """Missing API key raises APIKeyMissingError."""
-        with patch("transcribe_cli.core.transcriber.OpenAI") as mock_openai:
-            mock_client = MagicMock()
-            mock_client.api_key = None
-            mock_openai.return_value = mock_client
-
-            with pytest.raises(APIKeyMissingError):
-                _create_client(None)
-
-
-class TestParseSegments:
-    """Tests for segment parsing."""
-
-    def test_parse_segments_success(self) -> None:
-        """Segments are parsed correctly from API response."""
-        response = {
-            "segments": [
-                {"id": 0, "start": 0.0, "end": 2.5, "text": " Hello world."},
-                {"id": 1, "start": 2.5, "end": 5.0, "text": " How are you?"},
-            ]
-        }
-
-        segments = _parse_segments(response)
-        assert len(segments) == 2
-        assert segments[0].text == "Hello world."
-        assert segments[1].start == 2.5
-
-    def test_parse_empty_segments(self) -> None:
-        """Empty segments list returns empty list."""
-        response = {"segments": []}
-        segments = _parse_segments(response)
-        assert segments == []
-
-    def test_parse_missing_segments(self) -> None:
-        """Missing segments key returns empty list."""
-        response = {"text": "Hello"}
-        segments = _parse_segments(response)
-        assert segments == []
+    def test_word_timestamp_attributes(self) -> None:
+        """WordTimestamp stores word and timing."""
+        wt = WordTimestamp(word="hello", start=1.0, end=1.5)
+        assert wt.word == "hello"
+        assert wt.start == 1.0
+        assert wt.end == 1.5
 
 
 class TestSaveTranscript:
@@ -211,95 +141,154 @@ class TestSaveTranscript:
         assert "日本語" in content
 
 
-class TestAPIKeyMissingError:
-    """Tests for APIKeyMissingError."""
-
-    def test_error_message_includes_instructions(self) -> None:
-        """Error message includes setup instructions."""
-        error = APIKeyMissingError()
-        message = str(error)
-        assert "OPENAI_API_KEY" in message
-        assert "export" in message or "environment" in message.lower()
-
-
-class TestFileTooLargeError:
-    """Tests for FileTooLargeError."""
-
-    def test_error_message_includes_size(self) -> None:
-        """Error message includes file size and limit."""
-        error = FileTooLargeError(Path("large.mp3"), 30.5, 25.0)
-        message = str(error)
-        assert "30.5" in message
-        assert "25" in message
-
-    def test_error_stores_attributes(self) -> None:
-        """Error stores path and size attributes."""
-        error = FileTooLargeError(Path("test.mp3"), 30.0, 25.0)
-        assert error.path == Path("test.mp3")
-        assert error.size_mb == 30.0
-        assert error.max_mb == 25.0
-
-
 class TestTranscribeFileWithMocks:
-    """Tests for transcribe_file with mocked API."""
+    """Tests for transcribe_file with mocked faster-whisper model."""
+
+    def _make_mock_model(self, text: str = "This is the transcribed text.", language: str = "en") -> MagicMock:
+        """Build a mock WhisperModel that returns well-formed output."""
+        seg1 = MagicMock()
+        seg1.start = 0.0
+        seg1.end = 2.0
+        seg1.text = " This is"
+        seg1.words = []
+
+        seg2 = MagicMock()
+        seg2.start = 2.0
+        seg2.end = 4.0
+        seg2.text = " the transcribed text."
+        seg2.words = []
+
+        info = MagicMock()
+        info.language = language
+        info.duration = 4.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([seg1, seg2], info)
+        return mock_model
 
     def test_transcribe_audio_file(self, tmp_path: Path) -> None:
         """Audio file is transcribed successfully."""
-        from transcribe_cli.core.transcriber import transcribe_file
-
-        # Create fake audio file
         audio_file = tmp_path / "test.mp3"
         audio_file.write_bytes(b"fake audio content")
 
-        # Mock API response
-        mock_response = {
-            "text": "This is the transcribed text.",
-            "segments": [
-                {"id": 0, "start": 0.0, "end": 2.0, "text": " This is"},
-                {"id": 1, "start": 2.0, "end": 4.0, "text": " the transcribed text."},
-            ],
-            "language": "english",
-            "duration": 4.0,
-        }
+        mock_model = self._make_mock_model()
 
-        with patch("transcribe_cli.core.transcriber._create_client") as mock_create:
-            with patch("transcribe_cli.core.transcriber._transcribe_audio_file") as mock_transcribe:
-                mock_transcribe.return_value = mock_response
-                mock_create.return_value = MagicMock()
+        with patch("transcribe_cli.core.transcriber._get_model", return_value=mock_model):
+            result = transcribe_file(audio_file)
 
-                result = transcribe_file(audio_file, api_key="sk-test")
-
-                assert result.text == "This is the transcribed text."
-                assert result.language == "english"
-                assert len(result.segments) == 2
+        assert "This is" in result.text
+        assert "transcribed text" in result.text
+        assert result.language == "en"
+        assert len(result.segments) == 2
 
     def test_transcribe_file_not_found(self, tmp_path: Path) -> None:
         """Non-existent file raises FileNotFoundError."""
-        from transcribe_cli.core.transcriber import transcribe_file
-
         with pytest.raises(FileNotFoundError):
-            transcribe_file(tmp_path / "nonexistent.mp3", api_key="sk-test")
+            transcribe_file(tmp_path / "nonexistent.mp3")
 
-    def test_transcribe_rate_limit_error(self, tmp_path: Path) -> None:
-        """Rate limit error is converted to TranscriptionError."""
-        from transcribe_cli.core.transcriber import transcribe_file
-
+    def test_transcribe_model_error_raises_transcription_error(self, tmp_path: Path) -> None:
+        """Model transcription failure is wrapped in TranscriptionError."""
         audio_file = tmp_path / "test.mp3"
         audio_file.write_bytes(b"fake audio")
 
-        with patch("transcribe_cli.core.transcriber._create_client") as mock_create:
-            with patch("transcribe_cli.core.transcriber._transcribe_audio_file") as mock_transcribe:
-                mock_create.return_value = MagicMock()
-                # Create a proper RateLimitError mock
-                mock_response = MagicMock()
-                mock_response.status_code = 429
-                mock_transcribe.side_effect = RateLimitError(
-                    "Rate limit exceeded",
-                    response=mock_response,
-                    body=None,
-                )
+        mock_model = MagicMock()
+        mock_model.transcribe.side_effect = RuntimeError("model exploded")
 
-                with pytest.raises(TranscriptionError) as exc_info:
-                    transcribe_file(audio_file, api_key="sk-test")
+        with patch("transcribe_cli.core.transcriber._get_model", return_value=mock_model):
+            with pytest.raises(TranscriptionError) as exc_info:
+                transcribe_file(audio_file)
 
-                assert "rate limit" in str(exc_info.value).lower()
+        assert "Transcription failed" in str(exc_info.value)
+
+    def test_transcribe_respects_language(self, tmp_path: Path) -> None:
+        """Language parameter is forwarded to the model."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = self._make_mock_model()
+
+        with patch("transcribe_cli.core.transcriber._get_model", return_value=mock_model):
+            transcribe_file(audio_file, language="es")
+
+        mock_model.transcribe.assert_called_once()
+        call_kwargs = mock_model.transcribe.call_args
+        assert call_kwargs.kwargs.get("language") == "es"
+
+    def test_transcribe_auto_language_passes_none(self, tmp_path: Path) -> None:
+        """language='auto' is converted to None when calling the model."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = self._make_mock_model()
+
+        with patch("transcribe_cli.core.transcriber._get_model", return_value=mock_model):
+            transcribe_file(audio_file, language="auto")
+
+        call_kwargs = mock_model.transcribe.call_args
+        assert call_kwargs.kwargs.get("language") is None
+
+    def test_transcribe_with_word_timestamps(self, tmp_path: Path) -> None:
+        """word_timestamps=True is forwarded to the model."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = self._make_mock_model()
+
+        with patch("transcribe_cli.core.transcriber._get_model", return_value=mock_model):
+            transcribe_file(audio_file, word_timestamps=True)
+
+        call_kwargs = mock_model.transcribe.call_args
+        assert call_kwargs.kwargs.get("word_timestamps") is True
+
+    def test_transcribe_model_size_forwarded(self, tmp_path: Path) -> None:
+        """model_size is forwarded to _get_model."""
+        audio_file = tmp_path / "test.mp3"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = self._make_mock_model()
+
+        with patch("transcribe_cli.core.transcriber._get_model", return_value=mock_model) as mock_get:
+            transcribe_file(audio_file, model_size="small")
+
+        mock_get.assert_called_once_with("small", "auto", "auto")
+
+
+class TestGetModel:
+    """Tests for the lazy-loading model cache."""
+
+    def test_get_model_raises_when_not_installed(self) -> None:
+        """TranscriptionError is raised when faster-whisper is missing."""
+        from transcribe_cli.core import transcriber
+
+        # Clear cache to force fresh load attempt
+        original_cache = transcriber._model_cache.copy()
+        transcriber._model_cache.clear()
+
+        try:
+            with patch.dict("sys.modules", {"faster_whisper": None}):
+                with pytest.raises(TranscriptionError, match="faster-whisper is not installed"):
+                    transcriber._get_model("base", "auto", "auto")
+        finally:
+            transcriber._model_cache.update(original_cache)
+
+    def test_get_model_caches_instance(self, tmp_path: Path) -> None:
+        """The same model instance is returned on repeated calls."""
+        from transcribe_cli.core import transcriber
+
+        original_cache = transcriber._model_cache.copy()
+        transcriber._model_cache.clear()
+
+        mock_model = MagicMock()
+        mock_whisper_module = MagicMock()
+        mock_whisper_module.WhisperModel.return_value = mock_model
+
+        try:
+            with patch.dict("sys.modules", {"faster_whisper": mock_whisper_module}):
+                m1 = transcriber._get_model("base", "auto", "auto")
+                m2 = transcriber._get_model("base", "auto", "auto")
+                assert m1 is m2
+                # WhisperModel constructor called only once
+                assert mock_whisper_module.WhisperModel.call_count == 1
+        finally:
+            transcriber._model_cache.clear()
+            transcriber._model_cache.update(original_cache)

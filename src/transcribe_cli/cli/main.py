@@ -16,11 +16,14 @@ from transcribe_cli import __version__
 
 app = typer.Typer(
     name="transcribe",
-    help="Transcribe audio and video files using OpenAI Whisper API.",
+    help="Transcribe audio and video files using local Whisper models (no API key required).",
     add_completion=False,
     rich_markup_mode="rich",
 )
 console = Console()
+
+SUPPORTED_FORMATS = ("txt", "srt", "vtt", "json")
+SUPPORTED_MODELS = ("tiny", "base", "small", "medium", "large-v3")
 
 
 def version_callback(value: bool) -> None:
@@ -43,13 +46,10 @@ def main(
 ) -> None:
     """Audio Transcription CLI Tool.
 
-    Transcribe audio and video files using OpenAI Whisper API.
-    Supports batch processing, multiple output formats, and large files.
+    Transcribe audio and video files using local Whisper models via faster-whisper.
+    No API key required — all processing runs on your machine.
     """
     pass
-
-
-SUPPORTED_FORMATS = ("txt", "srt", "vtt", "json")
 
 
 @app.command()
@@ -78,6 +78,12 @@ def transcribe(
         "-l",
         help="Language code (e.g., 'en', 'es') or 'auto' for detection.",
     ),
+    model: str = typer.Option(
+        "base",
+        "--model",
+        "-m",
+        help=f"Whisper model size: {', '.join(SUPPORTED_MODELS)}",
+    ),
     diarize: bool = typer.Option(
         False,
         "--diarize/--no-diarize",
@@ -100,20 +106,16 @@ def transcribe(
         transcribe audio.mp3
         transcribe video.mkv --format srt
         transcribe recording.wav --output-dir ./transcripts
-        transcribe meeting.mp3 --diarize --format json
+        transcribe meeting.mp3 --model medium --diarize --format json
     """
     from transcribe_cli.core import (
-        APIKeyMissingError,
         FFmpegNotFoundError,
-        FileTooLargeError,
         TranscriptionError,
         UnsupportedFormatError,
         get_media_info,
         is_video_file,
-        save_transcript,
         transcribe_file,
     )
-
     from transcribe_cli.output import save_formatted_transcript
 
     # Validate output format
@@ -121,6 +123,14 @@ def transcribe(
         console.print(
             f"[red]Error:[/red] Unsupported format '{format}'. "
             f"Use one of: {', '.join(SUPPORTED_FORMATS)}."
+        )
+        raise typer.Exit(1)
+
+    # Validate model
+    if model not in SUPPORTED_MODELS:
+        console.print(
+            f"[red]Error:[/red] Unknown model '{model}'. "
+            f"Use one of: {', '.join(SUPPORTED_MODELS)}."
         )
         raise typer.Exit(1)
 
@@ -143,6 +153,8 @@ def transcribe(
         if diarize:
             status_msg += " [dim](with speaker diarization)[/dim]"
         console.print(f"{status_msg} {file}")
+        if verbose:
+            console.print(f"[dim]  Model: {model}[/dim]")
 
         # Determine output path
         output_path = None
@@ -159,6 +171,7 @@ def transcribe(
                 input_path=file,
                 output_path=output_path,
                 language=language,
+                model_size=model,
                 diarize=diarize,
                 word_timestamps=word_timestamps,
             )
@@ -175,12 +188,6 @@ def transcribe(
             if result.speakers:
                 console.print(f"[dim]  Speakers: {', '.join(result.speakers)}[/dim]")
 
-    except APIKeyMissingError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
-    except FileTooLargeError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
     except FFmpegNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -322,6 +329,12 @@ def batch(
         "-r",
         help="Recursively scan subdirectories.",
     ),
+    model: str = typer.Option(
+        "base",
+        "--model",
+        "-m",
+        help=f"Whisper model size: {', '.join(SUPPORTED_MODELS)}",
+    ),
     diarize: bool = typer.Option(
         False,
         "--diarize/--no-diarize",
@@ -335,7 +348,7 @@ def batch(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Preview files without processing (no API calls).",
+        help="Preview files without processing.",
     ),
     verbose: bool = typer.Option(
         False,
@@ -349,12 +362,11 @@ def batch(
         transcribe batch ./recordings
         transcribe batch ./videos --format srt --concurrency 3
         transcribe batch ./media --recursive --dry-run
-        transcribe batch ./meetings --diarize --format json
+        transcribe batch ./meetings --model medium --diarize --format json
     """
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
     from transcribe_cli.core import (
-        APIKeyMissingError,
         process_directory,
         scan_directory,
     )
@@ -364,6 +376,14 @@ def batch(
         console.print(
             f"[red]Error:[/red] Unsupported format '{format}'. "
             f"Use one of: {', '.join(SUPPORTED_FORMATS)}."
+        )
+        raise typer.Exit(1)
+
+    # Validate model
+    if model not in SUPPORTED_MODELS:
+        console.print(
+            f"[red]Error:[/red] Unknown model '{model}'. "
+            f"Use one of: {', '.join(SUPPORTED_MODELS)}."
         )
         raise typer.Exit(1)
 
@@ -400,11 +420,11 @@ def batch(
             console.print(f"  [dim]{rel_path}[/dim] ({file_size:.2f} MB)")
         console.print()
         console.print(f"[dim]Would process {len(files)} files with concurrency {concurrency}[/dim]")
-        console.print(f"[dim]Output format: {format}[/dim]")
+        console.print(f"[dim]Model: {model}, Output format: {format}[/dim]")
         raise typer.Exit(0)
 
     try:
-        console.print(f"[dim]Concurrency: {concurrency}[/dim]")
+        console.print(f"[dim]Model: {model}, Concurrency: {concurrency}[/dim]")
 
         if verbose:
             for f in files:
@@ -412,13 +432,10 @@ def batch(
 
         # Track progress
         completed = 0
-        failed_files: list[tuple[Path, str]] = []
 
         def progress_callback(path: Path, status: str) -> None:
             nonlocal completed
-            if status == "completed":
-                completed += 1
-            elif status == "failed":
+            if status in ("completed", "failed"):
                 completed += 1
 
         # Process with progress bar
@@ -434,7 +451,6 @@ def batch(
                 total=len(files),
             )
 
-            # Custom callback to update progress
             def update_progress(path: Path, status: str) -> None:
                 progress_callback(path, status)
                 if status in ("completed", "failed"):
@@ -447,6 +463,7 @@ def batch(
                 output_format=format,  # type: ignore
                 concurrency=concurrency,
                 recursive=recursive,
+                model_size=model,
                 diarize=diarize,
                 word_timestamps=word_timestamps,
                 progress_callback=update_progress,
@@ -464,16 +481,13 @@ def batch(
             console.print("[bold red]Failed files:[/bold red]")
             for result in summary.results:
                 if not result.success:
-                    console.print(f"  [red]✗[/red] {result.input_path.name}")
+                    console.print(f"  [red]x[/red] {result.input_path.name}")
                     if verbose and result.error:
                         console.print(f"    [dim]{result.error}[/dim]")
 
         if summary.failed > 0:
             raise typer.Exit(1)
 
-    except APIKeyMissingError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -507,8 +521,6 @@ def config(
         transcribe config --init
         transcribe config --locations
     """
-    import os
-
     from transcribe_cli.config import (
         create_default_config,
         find_config_file,
@@ -530,11 +542,11 @@ def config(
         active_config = find_config_file()
         for loc in get_config_locations():
             if loc == active_config:
-                console.print(f"  [green]✓[/green] {loc} [dim](active)[/dim]")
+                console.print(f"  [green]v[/green] {loc} [dim](active)[/dim]")
             elif loc.exists():
-                console.print(f"  [yellow]•[/yellow] {loc} [dim](exists)[/dim]")
+                console.print(f"  [yellow].[/yellow] {loc} [dim](exists)[/dim]")
             else:
-                console.print(f"  [dim]•[/dim] {loc}")
+                console.print(f"  [dim].[/dim] {loc}")
         raise typer.Exit(0)
 
     if show:
@@ -549,27 +561,34 @@ def config(
             console.print("  [bold]Config file:[/bold] [dim]none (using defaults)[/dim]")
         console.print()
 
-        # Show API key status
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if api_key:
-            masked = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
-            console.print(f"  [bold]OPENAI_API_KEY:[/bold] {masked}")
-        else:
-            console.print("  [bold]OPENAI_API_KEY:[/bold] [red]not set[/red]")
+        # Show model settings
+        try:
+            settings = get_settings()
+            console.print("  [bold]Model settings:[/bold]")
+            console.print(f"    Model size:   {settings.model_size}")
+            console.print(f"    Device:       {settings.device}")
+            console.print(f"    Compute type: {settings.compute_type}")
+        except Exception:
+            console.print("  [bold]Model settings:[/bold] [dim](using defaults)[/dim]")
+            console.print("    Model size:   base")
+            console.print("    Device:       auto")
+            console.print("    Compute type: auto")
         console.print()
 
-        # Show defaults
-        console.print("  [bold]Defaults:[/bold]")
+        # Show processing defaults
+        console.print("  [bold]Processing defaults:[/bold]")
         console.print("    Output format: txt")
-        console.print("    Concurrency: 5")
-        console.print("    Language: auto")
-        console.print("    Recursive: false")
+        console.print("    Concurrency:   5")
+        console.print("    Language:      auto")
+        console.print("    Recursive:     false")
     else:
         console.print("Use [bold]--show[/bold] to display current configuration.")
         console.print("Use [bold]--init[/bold] to create a config file.")
         console.print("Use [bold]--locations[/bold] to see config file search paths.")
         console.print()
-        console.print("[dim]Set OPENAI_API_KEY environment variable for API access.[/dim]")
+        console.print(
+            "[dim]No API key required — transcription runs locally via faster-whisper.[/dim]"
+        )
 
 
 @app.command()
@@ -601,6 +620,13 @@ def setup(
         console.print("[bold]Dependency Check[/bold]")
         console.print()
 
+        # Check Python version
+        py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        if sys.version_info >= (3, 9):
+            console.print(f"  [green]v[/green] Python {py_version}")
+        else:
+            console.print(f"  [red]x[/red] Python {py_version} (requires 3.9+)")
+
         # Check FFmpeg
         ffmpeg_path = shutil.which("ffmpeg")
         ffprobe_path = shutil.which("ffprobe")
@@ -608,11 +634,11 @@ def setup(
         if ffmpeg_path and ffprobe_path:
             try:
                 info = validate_ffmpeg()
-                console.print(f"  [green]✓[/green] FFmpeg {info.version_display} ({ffmpeg_path})")
+                console.print(f"  [green]v[/green] FFmpeg {info.version_display} ({ffmpeg_path})")
             except Exception as e:
-                console.print(f"  [yellow]⚠[/yellow] FFmpeg found but has issues: {e}")
+                console.print(f"  [yellow]![/yellow] FFmpeg found but has issues: {e}")
         else:
-            console.print("  [red]✗[/red] FFmpeg not found")
+            console.print("  [red]x[/red] FFmpeg not found")
             if sys.platform.startswith("linux"):
                 console.print("    [dim]Install: sudo apt install ffmpeg[/dim]")
             elif sys.platform == "darwin":
@@ -620,20 +646,13 @@ def setup(
             elif sys.platform == "win32":
                 console.print("    [dim]Install: choco install ffmpeg[/dim]")
 
-        # Check Python version
-        py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-        if sys.version_info >= (3, 9):
-            console.print(f"  [green]✓[/green] Python {py_version}")
-        else:
-            console.print(f"  [red]✗[/red] Python {py_version} (requires 3.9+)")
-
-        # Check API key
-        import os
-        if os.environ.get("OPENAI_API_KEY"):
-            console.print("  [green]✓[/green] OPENAI_API_KEY is set")
-        else:
-            console.print("  [yellow]⚠[/yellow] OPENAI_API_KEY not set")
-            console.print("    [dim]Set: export OPENAI_API_KEY=sk-...[/dim]")
+        # Check faster-whisper
+        try:
+            import faster_whisper  # type: ignore[import]  # noqa: F401
+            console.print("  [green]v[/green] faster-whisper is installed")
+        except ImportError:
+            console.print("  [red]x[/red] faster-whisper not found")
+            console.print("    [dim]Install: pip install faster-whisper[/dim]")
 
         console.print()
 
@@ -649,7 +668,6 @@ def setup(
         console.print()
 
         if sys.platform.startswith("linux"):
-            # Detect package manager
             if shutil.which("apt-get"):
                 cmd = ["sudo", "apt-get", "update"]
                 cmd_install = ["sudo", "apt-get", "install", "-y", "ffmpeg"]
