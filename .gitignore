@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Build
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Environment
+.env
+.env.local
+*.key
+
+# IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+
+# Claude
+.claude/settings.local.json
+
+# Temp files
+*.tmp
+*.temp
+.transcribe_checkpoint_*
+
+# Test files (real media files for manual testing)
+.testfiles/
+
+# Output files from transcription
+*.transcript.txt
+*.transcript.srt
+
+# Log files
+*.log
+
+# OS generated
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Python packaging
+*.whl
+MANIFEST
+
+# HuggingFace cache (inside model dirs)
+models/**/.cache/
