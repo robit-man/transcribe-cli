@@ -4,6 +4,12 @@
 
 ## Quickstart
 
+**npm** (Node.js API + CLI):
+```bash
+npm install transcribe-cli
+```
+
+**Shell** (standalone CLI):
 ```bash
 curl -sSL https://raw.githubusercontent.com/robit-man/transcribe-cli/main/install.sh | bash
 ```
@@ -23,11 +29,13 @@ transcribe batch ./recordings --recursive --format srt
 - **100% Local** — Runs on your machine via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2). No API keys, no cloud, no data leaves your system.
 - **Speaker Diarization** — Identify who said what with `--diarize` (via [pyannote.audio](https://github.com/pyannote/pyannote-audio))
 - **Word-Level Timestamps** — Precise per-word timing with `--word-timestamps`
+- **Live Audio Streaming** — Real-time transcription via Node.js streams
 - **4 Output Formats** — `txt`, `srt` (with speaker labels), `vtt` (with W3C voice tags), `json` (full metadata)
 - **Audio + Video** — MP3, WAV, FLAC, AAC, M4A, OGG, WMA, MP4, MKV, AVI, MOV, WebM, FLV
 - **Batch Processing** — Process entire directories with configurable concurrency
 - **5 Model Sizes** — `tiny`, `base`, `small`, `medium`, `large-v3` (auto-downloads on first use)
 - **Auto Audio Extraction** — Videos are automatically handled via FFmpeg
+- **Dual Interface** — Use as CLI tool or Node.js API with full TypeScript types
 - **Cross-Platform** — Linux and macOS
 
 ## Requirements
@@ -122,6 +130,94 @@ transcribe config --locations   # Show config file search paths
 
 ```bash
 transcribe setup --check
+```
+
+## Node.js API
+
+### Install
+
+```bash
+npm install transcribe-cli
+```
+
+On install, the package automatically:
+1. Creates a Python virtual environment
+2. Installs faster-whisper and all Python dependencies
+3. Downloads the default Whisper model (`base`)
+
+Set `TRANSCRIBE_VERBOSE=1` to see setup progress. Set `TRANSCRIBE_MODEL=medium` to pre-download a different model.
+
+### File Transcription
+
+```javascript
+const { transcribe, transcribeBatch, shutdownBridge } = require('transcribe-cli');
+
+// Transcribe a single file
+const result = await transcribe('meeting.mp3', {
+  model: 'base',           // tiny, base, small, medium, large-v3
+  diarize: true,           // speaker identification
+  wordTimestamps: true,    // per-word timing
+  format: 'json',          // txt, srt, vtt, json
+  language: 'auto',        // or 'en', 'es', etc.
+});
+
+console.log(result.text);
+console.log(result.speakers);    // ['SPEAKER_00', 'SPEAKER_01']
+console.log(result.segments);    // [{id, start, end, text, speaker, words}]
+
+// Batch transcribe a directory
+const batch = await transcribeBatch('./recordings', {
+  recursive: true,
+  concurrency: 3,
+  format: 'srt',
+});
+console.log(`${batch.successful}/${batch.totalFiles} files transcribed`);
+
+// Clean up when done
+await shutdownBridge();
+```
+
+### Live Audio Streaming
+
+```javascript
+const { TranscribeLive } = require('transcribe-cli');
+
+const live = new TranscribeLive({
+  model: 'base',
+  sampleRate: 16000,    // Hz
+  channels: 1,          // mono
+  sampleWidth: 2,       // 16-bit
+  chunkDuration: 5,     // seconds per chunk
+  wordTimestamps: true,
+});
+
+live.on('ready', () => {
+  console.log('Model loaded, streaming...');
+});
+
+live.on('transcript', (event) => {
+  console.log(`[${event.isFinal ? 'FINAL' : 'partial'}] ${event.text}`);
+  // event.segments has full timing + speaker info
+});
+
+// Feed raw PCM audio buffers
+live.write(pcmBuffer);
+
+// Or pipe from any readable stream (microphone, file, etc.)
+audioSource.pipe(live.stream);
+
+// Finish and flush remaining audio
+await live.finish();
+```
+
+### TypeScript
+
+Full type definitions included:
+
+```typescript
+import { transcribe, TranscribeLive, TranscriptionResult, LiveTranscriptEvent } from 'transcribe-cli';
+
+const result: TranscriptionResult = await transcribe('audio.mp3', { diarize: true });
 ```
 
 ## CLI Reference
